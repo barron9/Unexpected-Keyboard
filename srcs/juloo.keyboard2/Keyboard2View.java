@@ -54,7 +54,10 @@ public class Keyboard2View extends View
   private Theme.Computed _tc;
 
   private static RectF _tmpRect = new RectF();
-
+  private android.widget.PopupWindow _previewPopup;
+  private android.widget.TextView _previewText;
+  private final int[] _windowOffset = new int[2];
+  private float _lastTouchX, _lastTouchY;
   enum Vertical
   {
     TOP,
@@ -78,6 +81,43 @@ public class Keyboard2View extends View
       setKeyboard(KeyboardData.load(getResources(), layout_id));
   }
 
+  private void updateKeyPreview(KeyValue kv) {
+    if (kv == null) {
+      if (_previewPopup != null) _previewPopup.dismiss();
+      return;
+    }
+
+    // Lazy initialization: only happens when a key is actually pressed
+    if (_previewPopup == null) {
+      _previewText = new android.widget.TextView(getContext());
+      _previewText.setGravity(android.view.Gravity.CENTER);
+      _previewText.setPadding(0, 0, 0, 20); // Adjust for visual "balloon" look
+      _previewText.setTextColor(_theme.labelColor);
+      _previewText.setBackgroundColor(_theme.colorNavBar);
+
+      // Size it relative to key width
+      _previewPopup = new android.widget.PopupWindow(_previewText,
+              (int)(_keyWidth * 1.3f), (int)(_tc.row_height * 1.5f));
+      _previewPopup.setTouchable(false);
+      _previewPopup.setAnimationStyle(0);
+    }
+
+    _previewText.setText(kv.getString());
+    _previewText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, _mainLabelSize * 1.2f);
+
+    // Calculate screen position
+    this.getLocationInWindow(_windowOffset);
+    int x = _windowOffset[0] + (int)(_lastTouchX - (_previewPopup.getWidth() / 2));
+    int y = _windowOffset[1] + (int)(_lastTouchY - _previewPopup.getHeight() * 1.1f);
+
+    if (this.getWindowToken() != null) {
+      if (_previewPopup.isShowing()) {
+        _previewPopup.update(x, y, -1, -1);
+      } else {
+        _previewPopup.showAtLocation(this, android.view.Gravity.NO_GRAVITY, x, y);
+      }
+    }
+  }
   private Window getParentWindow(Context context)
   {
     if (context instanceof InputMethodService)
@@ -158,6 +198,8 @@ public class Keyboard2View extends View
   {
     updateFlags();
     _config.handler.key_down(k, isSwipe);
+    // Show Preview
+    updateKeyPreview(k);
     invalidate();
     vibrate();
   }
@@ -167,6 +209,7 @@ public class Keyboard2View extends View
     // [key_up] must be called before [updateFlags]. The latter might disable
     // flags.
     _config.handler.key_up(k, mods);
+    if (_previewPopup != null) _previewPopup.dismiss(); // Hide
     updateFlags();
     invalidate();
   }
@@ -206,13 +249,18 @@ public class Keyboard2View extends View
         p = event.getActionIndex();
         float tx = event.getX(p);
         float ty = event.getY(p);
+        _lastTouchX = tx;
+        _lastTouchY = ty;
         KeyboardData.Key key = getKeyAtPosition(tx, ty);
         if (key != null)
           _pointers.onTouchDown(tx, ty, event.getPointerId(p), key);
         break;
       case MotionEvent.ACTION_MOVE:
-        for (p = 0; p < event.getPointerCount(); p++)
+        for (p = 0; p < event.getPointerCount(); p++) {
+          _lastTouchX = event.getX(p);
+          _lastTouchY = event.getY(p);
           _pointers.onTouchMove(event.getX(p), event.getY(p), event.getPointerId(p));
+        }
         break;
       case MotionEvent.ACTION_CANCEL:
         _pointers.onTouchCancel();
