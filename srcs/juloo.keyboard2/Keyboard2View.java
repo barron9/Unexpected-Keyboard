@@ -58,6 +58,11 @@ public class Keyboard2View extends View
   private android.widget.TextView _previewText;
   private final int[] _windowOffset = new int[2];
   private float _lastTouchX, _lastTouchY;
+
+  private final android.os.Handler _handler = new android.os.Handler(android.os.Looper.getMainLooper());
+  private final android.util.SparseArray<Runnable> _dismissRunnables = new android.util.SparseArray<>();
+
+  private final android.util.SparseArray<android.widget.PopupWindow> _activePopups = new android.util.SparseArray<>();
   enum Vertical
   {
     TOP,
@@ -81,42 +86,68 @@ public class Keyboard2View extends View
       setKeyboard(KeyboardData.load(getResources(), layout_id));
   }
 
-  private void updateKeyPreview(KeyValue kv) {
+  private void updateKeyPreview(KeyValue kv, int pointerId, float xPos, float yPos) {
     if (kv == null) {
-      if (_previewPopup != null) _previewPopup.dismiss();
+      dismissPreview(pointerId);
       return;
     }
 
-    // Lazy initialization: only happens when a key is actually pressed
-    if (_previewPopup == null) {
-      _previewText = new android.widget.TextView(getContext());
-      _previewText.setGravity(android.view.Gravity.CENTER);
-      _previewText.setPadding(0, 0, 0, 20); // Adjust for visual "balloon" look
-      _previewText.setTextColor(_theme.labelColor);
-      _previewText.setBackgroundColor(_theme.colorNavBar);
+    android.widget.PopupWindow popup = _activePopups.get(pointerId);
+    android.widget.TextView textView;
 
-      // Size it relative to key width
-      _previewPopup = new android.widget.PopupWindow(_previewText,
+    if (popup == null) {
+      // Create a new popup for this specific finger
+      textView = new android.widget.TextView(getContext());
+      textView.setGravity(android.view.Gravity.CENTER);
+      textView.setTextColor(_theme.labelColor);
+      textView.setBackgroundColor(_theme.activatedColor);
+
+      popup = new android.widget.PopupWindow(textView,
               (int)(_keyWidth * 1.3f), (int)(_tc.row_height * 1.5f));
-      _previewPopup.setTouchable(false);
-      _previewPopup.setAnimationStyle(0);
+      popup.setTouchable(false);
+      popup.setAnimationStyle(0);
+      _activePopups.put(pointerId, popup);
+    } else {
+      textView = (android.widget.TextView) popup.getContentView();
     }
 
-    _previewText.setText(kv.getString());
-    _previewText.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, _mainLabelSize * 1.2f);
+    textView.setText(kv.getString());
+    textView.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, _mainLabelSize * 1.2f);
 
-    // Calculate screen position
+    // Position logic
     this.getLocationInWindow(_windowOffset);
-    int x = _windowOffset[0] + (int)(_lastTouchX - (_previewPopup.getWidth() / 2));
-    int y = _windowOffset[1] + (int)(_lastTouchY - _previewPopup.getHeight() * 1.1f);
+    int x = _windowOffset[0] + (int)(xPos - (popup.getWidth() / 2));
+    int y = _windowOffset[1] + (int)(yPos - popup.getHeight() * 1.5f);
 
     if (this.getWindowToken() != null) {
-      if (_previewPopup.isShowing()) {
-        _previewPopup.update(x, y, -1, -1);
+      if (popup.isShowing()) {
+        popup.update(x, y, -1, -1);
       } else {
-        _previewPopup.showAtLocation(this, android.view.Gravity.NO_GRAVITY, x, y);
+        popup.showAtLocation(this, android.view.Gravity.NO_GRAVITY, x, y);
       }
     }
+  }
+
+  private void dismissPreview(int pointerId) {
+    // 1. Check if there's already a pending dismissal for this pointer and cancel it
+    Runnable pending = _dismissRunnables.get(pointerId);
+    if (pending != null) {
+      _handler.removeCallbacks(pending);
+    }
+
+    // 2. Create a new runnable to hide the popup after a delay
+    Runnable dismissRunnable = () -> {
+      android.widget.PopupWindow popup = _activePopups.get(pointerId);
+      if (popup != null) {
+        popup.dismiss();
+        _activePopups.remove(pointerId);
+      }
+      _dismissRunnables.remove(pointerId);
+    };
+
+    // 3. Store and schedule (60ms to 100ms is the "Gboard feel")
+    _dismissRunnables.put(pointerId, dismissRunnable);
+    _handler.postDelayed(dismissRunnable, 70);
   }
   private Window getParentWindow(Context context)
   {
@@ -199,7 +230,7 @@ public class Keyboard2View extends View
     updateFlags();
     _config.handler.key_down(k, isSwipe);
     // Show Preview
-    updateKeyPreview(k);
+    //updateKeyPreview(k);
     invalidate();
     vibrate();
   }
@@ -243,6 +274,7 @@ public class Keyboard2View extends View
       case MotionEvent.ACTION_UP:
       case MotionEvent.ACTION_POINTER_UP:
         _pointers.onTouchUp(event.getPointerId(event.getActionIndex()));
+        dismissPreview(event.getPointerId(event.getActionIndex()));
         break;
       case MotionEvent.ACTION_DOWN:
       case MotionEvent.ACTION_POINTER_DOWN:
@@ -252,8 +284,9 @@ public class Keyboard2View extends View
         _lastTouchX = tx;
         _lastTouchY = ty;
         KeyboardData.Key key = getKeyAtPosition(tx, ty);
-        if (key != null)
+        if (key != null){
           _pointers.onTouchDown(tx, ty, event.getPointerId(p), key);
+          updateKeyPreview(key.keys[0], event.getPointerId(p), tx, ty);}
         break;
       case MotionEvent.ACTION_MOVE:
         for (p = 0; p < event.getPointerCount(); p++) {
